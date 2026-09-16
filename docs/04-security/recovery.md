@@ -2,77 +2,78 @@
 
 **Document type:** AFU — Account and cryptographic recovery  
 **Status:** V1 baseline / security gate  
-**Last updated:** 2026-08-09
+**Last updated:** 2026-09-16
 
 ## 1. Purpose
 
-Recovery exists to provide a controlled way to regain access when the normal private-note protection path is unavailable, without turning email access into a permanent copy of the user's private decryption keys.
+The initial private-note cryptographic activation is initiated by the Nymbus administrator for the relevant user. The purpose is to allow the user to establish their own master password without exposing that password to the administrator or backend.
 
-## 2. Recovery channel
+## 2. Administrator-initiated activation
 
-The recovery request is delivered to the Google account email configured for the Nymbus account.
+For a newly activated user:
 
-The recovery mechanism must be bound to the account and the recovery transaction that initiated it.
+1. administrator initiates the activation/recovery process for the specific Nymbus user;
+2. Nymbus creates a one-time activation transaction;
+3. the user completes the approved authentication/activation flow;
+4. the user chooses and establishes their master password locally;
+5. the master password is processed locally and is never sent to the administrator or Nymbus backend;
+6. the user's root/key-encryption material is initialized/protected according to the cryptographic key-management design;
+7. the activation transaction is consumed.
 
-## 3. Temporary recovery key
+The administrator must never be given the master password or plaintext private-note keys.
 
-The system generates a high-entropy temporary recovery key.
+## 3. Temporary activation/recovery mechanism
 
-The key must:
+If the activation protocol uses a short-lived activation code or token, it must be:
 
-- be single-use;
-- be account-bound;
-- expire after exactly 10 minutes from issuance;
-- be invalidated after successful consumption;
-- be invalidated when the recovery transaction is cancelled or superseded;
-- never be stored as plaintext in application logs.
+- high entropy;
+- single-use;
+- account-bound;
+- bound to the activation transaction;
+- server-expiring;
+- rate-limited;
+- absent from application logs in plaintext.
 
-## 4. Recovery flow
+The exact transport and lifetime are security-ADR decisions. It must not be a permanent universal decryption secret.
 
-The functional sequence is:
+## 4. Later recovery
 
-1. user initiates recovery;
-2. Nymbus creates a short-lived recovery transaction;
-3. the temporary recovery key is delivered to the configured Google account email;
-4. the user provides the key to Nymbus through the approved recovery flow;
-5. the key is validated for account, transaction, expiry and single-use state;
-6. the user completes the previously defined recovery step;
-7. protected cryptographic material is restored/re-wrapped according to the approved key hierarchy;
-8. the temporary recovery transaction is consumed.
+V1 does not define a separate per-note recovery password or temporary note password.
 
-## 5. No permanent master-key email
+If later account recovery is implemented, it must restore/re-establish the user's master-password-protected key path without sending the master password or a permanent universal decryption key by email.
 
-The email must never contain:
+Any later email recovery mechanism must be explicitly specified and security-reviewed before implementation.
 
-- the master password;
-- a permanent account private key;
-- a plaintext note key;
-- an unprotected universal recovery secret.
+## 5. Master password
+
+The master password is the sole password-based secret for private-note protection in V1.
+
+It must:
+
+- be entered only through the approved client flow;
+- never be transmitted to Nymbus backend;
+- never be stored in plaintext;
+- never be logged;
+- be processed using the approved memory-hard password KDF.
 
 ## 6. Recovery and private notes
 
 Recovery must restore an authorized path to the user's protected cryptographic hierarchy. It must not silently convert all private notes into server-decryptable content.
 
+Shared notes remain governed by the user's authorization state. Recovering one user's master-password key hierarchy does not automatically grant access to another user's shared notes.
+
 ## 7. Brute-force protection
 
-Recovery attempts must be rate-limited. Invalid or expired recovery keys must not reveal unnecessary information about the account or transaction.
+Activation and any later recovery attempts must be rate-limited. Invalid or expired activation/recovery credentials must not reveal unnecessary information about the account or transaction.
 
-## 8. Expiry
+## 8. Recovery audit
 
-The 10-minute validity period is measured from server-side issuance time. Client clocks must not be trusted to determine validity.
+The system should record security-relevant activation/recovery events such as request, successful validation, consumption and failure, while never recording passwords, activation secrets or private keys.
 
-## 9. Concurrent recovery attempts
+## 9. Compromised recovery channel
 
-A new recovery transaction may invalidate or supersede an earlier one according to the final recovery protocol. The implementation must avoid having multiple simultaneously valid recovery paths when the approved protocol does not require them.
+Control of any recovery/activation channel is a security dependency. The system must not claim that recovery provides stronger protection than the channel used to authorize it.
 
-## 10. Recovery audit
+## 10. Security gate
 
-The system should record security-relevant recovery events such as request, successful validation, consumption and failure, while never recording the recovery key itself.
-
-## 11. Compromised email account
-
-Control of the configured email account is a security dependency of recovery. Users must be informed that recovery cannot provide stronger protection than the recovery channel itself.
-
-## 12. Security gate
-
-Before implementation, an ADR must define exactly how successful recovery obtains or reconstructs the protected key hierarchy, how existing device trust is affected, and how dedicated note passwords interact with recovery.
+Before implementation, an ADR must define exactly how administrator-initiated activation establishes the user's master-password-protected key hierarchy, how subsequent device enrollment works, and whether/how later recovery is supported.
