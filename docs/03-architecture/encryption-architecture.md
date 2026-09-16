@@ -2,7 +2,7 @@
 
 **Document type:** AFU — End-to-end encryption model  
 **Status:** V1 baseline / security design  
-**Last updated:** 2026-08-09
+**Last updated:** 2026-09-16
 
 > This document defines the required security properties and key relationships. Concrete cryptographic library/API choices are intentionally deferred to implementation ADRs and must use well-reviewed standard primitives.
 
@@ -13,30 +13,26 @@ Private notes must remain end-to-end encrypted such that the Nymbus backend can 
 ## 2. Important terminology
 
 - **Account authentication:** proves the user's identity to Nymbus.
-- **Master password:** user secret used in the private-note key hierarchy.
-- **Note password:** optional dedicated secret protecting an individual note.
-- **Note key:** symmetric key protecting a specific note's encrypted content.
+- **Master password:** the user's cryptographic secret for the private-note key hierarchy. It is established during initial application activation through the approved recovery/activation process initiated by an administrator for the user.
+- **Note key:** symmetric key protecting a specific private note's encrypted content.
 - **Key encryption/wrapping key:** key used to protect another key rather than document content directly.
-- **Recovery mechanism:** controlled process that restores access to the user's key hierarchy after the normal unlock path is unavailable.
+- **Recovery mechanism:** controlled process used during initial activation and, where defined, later recovery to establish or restore the user's master-password-protected key hierarchy.
 - **Platform authenticator:** WebAuthn/device capability such as Face ID, Touch ID or Windows Hello.
+
+**Removed concept:** V1 has no dedicated per-note password and no temporary note password. All private notes are protected through the user's master-password key hierarchy.
 
 ## 3. Core model
 
 The preferred model is envelope encryption:
 
 ```text
-                         Account / user key hierarchy
+                         User cryptographic hierarchy
                                   │
-                     ┌────────────┴────────────┐
-                     │                         │
-              Master-derived             Recovery path
-                protection                     │
-                     │                         │
-                     └──────────┬──────────────┘
-                                │
-                         User/key-encryption
+                         Master-password path
+                                  │
+                         User key-encryption
                               material
-                                │
+                                  │
                    ┌────────────┼─────────────┐
                    │            │             │
                 Note A       Note B        Note C
@@ -46,11 +42,11 @@ The preferred model is envelope encryption:
                 content        content       content
 ```
 
-The exact hierarchy must be finalized before implementation because it determines whether the requested password/passkey/recovery behaviors can coexist without weakening E2E confidentiality.
+For a shared private note, the same note key is made accessible through separate protected key-access records for the owner and every authorized recipient. The backend must never receive the plaintext note key as a universal server-readable secret.
 
 ## 4. Per-note encryption
 
-Each private note should have independent content-encryption material rather than encrypting every note directly with one reusable master-derived key.
+Each private note must have independent content-encryption material rather than encrypting every note directly with one reusable master-derived key.
 
 Benefits:
 
@@ -88,7 +84,7 @@ The following must remain protected for private notes:
 
 Database/storage encryption is not equivalent to E2E encryption.
 
-A database-encryption key available to the backend protects disks/volumes but does not prevent a compromised backend from decrypting stored data.
+Database encryption protects stored data from disk/volume compromise but does not prevent a compromised backend from decrypting data for which the backend possesses the relevant keys.
 
 Therefore private-note content requires client-side encryption before it reaches server persistence.
 
@@ -104,58 +100,57 @@ Authenticated account
 Unlocked private-note key hierarchy
 ```
 
-## 8. First unlock
+## 8. Master password establishment
 
-For a newly initialized private note, the user must perform the required password-based initialization before convenient platform-authenticator unlock can be enabled.
+The master password is established once during the user's initial Nymbus application activation. The activation/recovery process is initiated by the Nymbus administrator for the relevant user and must be explicitly authenticated and authorized.
 
-This ensures that the initial cryptographic relationship is established using a user-controlled secret rather than assuming that an account session is sufficient.
+The master password:
 
-## 9. Master-password option
+- is chosen/entered by the user through the approved client flow;
+- is never sent to the Nymbus backend;
+- is never logged or stored in plaintext;
+- is processed through the approved memory-hard password KDF;
+- protects the user's root/key-encryption material through the defined envelope hierarchy.
 
-The product requirement allows a user to protect the note using their own master password.
+The administrator must not receive the master password or any plaintext private-note key as part of the activation process.
 
-The architecture must avoid storing the raw master password. A memory-hard password-based key derivation function must derive cryptographic material from it.
+## 9. Private-note initialization and first unlock
 
-The master password must never be sent to the backend.
+A private note is always initialized against the user's existing master-password key hierarchy. There is no separate note password.
 
-## 10. Dedicated note-password option
+When a note becomes private:
 
-A user may choose a dedicated password for an individual private note.
+1. the client must have an authorized local master-password-derived key path available;
+2. the client generates the note key locally;
+3. the client creates the protected note-key envelope for the owner;
+4. private content is encrypted locally using the note key;
+5. ciphertext and protected key-access metadata are synchronized to the backend.
 
-That password must protect the relevant note-key access path rather than directly encrypting the entire document with a password-derived key in a way that makes future key rotation unnecessarily difficult.
+The first password-based access to a newly initialized private note must use the user's master password. A passkey/platform authenticator, bulk unlock or authenticated account session must not replace the required master-password initialization path.
 
-The raw note password must never be sent to the backend.
+## 10. Master password and note keys
+
+The master password must not directly encrypt note bodies. A memory-hard password KDF derives the required cryptographic material locally. The resulting hierarchy protects individual randomly generated note keys.
+
+Changing the master password must re-wrap the user's root/key-encryption material rather than re-encrypting every note body, provided the approved key hierarchy permits this.
 
 ## 11. Platform-authenticator unlock
 
-After first-time initialization, the user may authorize convenient unlock using the platform authenticator.
+After the user's master-password key hierarchy has been initialized and the relevant private note has completed its first password-based initialization, the user may authorize convenient local unlock using a platform authenticator.
 
-The architecture should use WebAuthn/platform capabilities to protect access to a locally held key-encryption capability rather than transmitting biometric information to Nymbus.
+The implementation must bind the authenticator to a locally held key-access capability. The authenticator must not become a server-side substitute for the user's cryptographic root.
 
 Nymbus must never receive:
 
 - Face ID biometric data;
 - Touch ID biometric data;
 - Windows Hello biometric data;
-- the device's biometric template.
-
-The platform authenticator only signals successful local user verification and performs cryptographic operations according to the platform/WebAuthn model.
+- the device's biometric template;
+- the device PIN/passcode.
 
 ## 12. Critical browser limitation
 
 Web applications do not receive raw biometric data from Face ID, Touch ID or Windows Hello. Therefore the implementation must not describe the feature as Nymbus storing or reading biometrics.
-
-The correct conceptual model is:
-
-```text
-Nymbus asks platform to authenticate
-          ↓
-Platform verifies user locally
-          ↓
-Platform/browser performs approved credential operation
-          ↓
-Nymbus receives cryptographic/authentication result
-```
 
 ## 13. Unlock timeout
 
@@ -171,11 +166,11 @@ The account session may remain valid independently.
 
 ## 14. Bulk unlock
 
-Bulk unlock is permitted only for notes that have already completed first-time password initialization.
+Bulk unlock is permitted only for notes whose private protection has already been initialized.
 
 Bulk unlock must not:
 
-- bypass a note's initial password requirement;
+- bypass master-password initialization;
 - upload plaintext to the backend;
 - permanently convert note-specific keys into one global plaintext key;
 - remove note-level authorization.
@@ -204,9 +199,18 @@ A version must not become plaintext merely because it is old or because an admin
 
 ## 18. Sharing
 
-Sharing a private note requires granting the recipient access to the note's cryptographic key material through an authenticated, authorized key exchange/wrapping mechanism.
+Sharing a private note grants each authorized Nymbus user access to the note key through a separate protected key-access record.
 
-The backend may coordinate the exchange but must not learn the plaintext key in a form that defeats the E2E model.
+Conceptually:
+
+```text
+Private Note Key
+   ├── protected for Owner master-key path
+   ├── protected for User A master-key path
+   └── protected for User B master-key path
+```
+
+The owner's master password is never transmitted to recipients. Each recipient uses their own master-password key hierarchy to access their protected copy/wrapping of the note key.
 
 ## 19. Revocation
 
@@ -215,19 +219,17 @@ Revocation has two distinct meanings:
 1. server authorization revocation — the user can no longer request future protected operations;
 2. cryptographic revocation — future content/key generations prevent the revoked user from legitimately obtaining new access.
 
-Nymbus cannot retroactively erase plaintext that a recipient already copied.
+For a shared private note, revoking a recipient must remove their server authorization and, where required to prevent access to future content, rotate the note key and distribute the new key only to remaining authorized users.
 
-Where immediate cryptographic revocation is required, the system must re-key affected content or use an equivalent forward-secrecy/key-rotation mechanism defined by the final protocol.
+Nymbus cannot retroactively erase plaintext that a recipient already copied, exported or otherwise extracted while authorized.
+
+Historical-version access after revocation must follow the explicit version/re-key policy defined by the security ADR.
 
 ## 20. Recovery
 
-Recovery is the most delicate part of the model.
+The initial activation/recovery mechanism may be initiated by the administrator for a user and must result in the user establishing their own master password without the administrator learning it.
 
-A 10-minute recovery key delivered by email must not itself be a permanent copy of the user's master password or a long-lived universal decryption key.
-
-The preferred design direction is a short-lived, authenticated recovery capability that allows the user to establish a new local key-encryption path while preserving the E2E property.
-
-The exact recovery protocol must be validated by security review before implementation.
+Any later recovery mechanism must not email the master password or a permanent universal decryption key. The exact later recovery protocol must be validated by security review before implementation.
 
 ## 21. Cryptographic integrity
 
@@ -237,7 +239,7 @@ Tampered ciphertext must fail authentication and must never be presented as vali
 
 ## 22. Key separation
 
-Keys used for different purposes should be cryptographically separated. Authentication/session keys must not be reused as content-encryption keys.
+Keys used for different purposes must be cryptographically separated. Authentication/session keys must not be reused as content-encryption keys.
 
 ## 23. Cryptographic primitives
 
@@ -259,15 +261,16 @@ V1 does not claim protection against:
 
 ## 25. Security review gate
 
-Implementation must not begin for the cryptographic key hierarchy until the following questions have explicit answers in `key-management.md`:
+Implementation must not begin for the cryptographic key hierarchy until the following questions have explicit answers in `key-management.md` and the relevant ADRs:
 
-1. What is the root of trust for a new account?
+1. What exactly is established during initial administrator-initiated user activation?
 2. What exactly is derived from the master password?
-3. How is a dedicated note password represented?
-4. How is platform-authenticator access bound to the local key hierarchy?
-5. What survives browser restart?
-6. What survives device change?
-7. What does recovery restore?
-8. How is a shared note re-keyed after revocation?
-9. What happens when one device is lost?
-10. How are all local private indexes invalidated after timeout?
+3. How is a private note key protected for its owner?
+4. How is a shared note key protected for each recipient's master-key path?
+5. How is platform-authenticator access bound to the local key hierarchy?
+6. What survives browser restart?
+7. What survives device change?
+8. What does later recovery restore, if supported?
+9. How is a shared note re-keyed after revocation?
+10. What happens when one device is lost?
+11. How are all local private indexes invalidated after timeout?
