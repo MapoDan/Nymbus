@@ -2,7 +2,7 @@
 
 **Document type:** AFU — Functional use-case catalogue  
 **Status:** V1 baseline  
-**Last updated:** 2026-08-09
+**Last updated:** 2026-09-16
 
 This document describes the principal user/system interactions. It intentionally avoids implementation code. Technical mechanisms required to realize each use case are documented separately.
 
@@ -14,7 +14,7 @@ This document describes the principal user/system interactions. It intentionally
 | User | Authenticated Nymbus account holder. |
 | Note owner | User who owns a note. |
 | Collaborator | User with explicit or inherited access to a shared note/folder. |
-| Administrator | User with administrative permissions. |
+| Administrator | User with user-management/administrative permissions. |
 | Platform authenticator | Device/browser security mechanism such as Face ID, Touch ID or Windows Hello exposed through WebAuthn/platform APIs. |
 | Google Identity Provider | External identity provider used for initial Nymbus authentication. |
 | NAS operator | Person responsible for the self-hosted infrastructure and backups. |
@@ -22,15 +22,16 @@ This document describes the principal user/system interactions. It intentionally
 
 ---
 
-## UC-AUTH-01 — First account login
+## UC-AUTH-01 — First account login and initial activation
 
 **Primary actor:** Visitor  
-**Goal:** Create/access a Nymbus account using Google.
+**Goal:** Create/access a Nymbus account using Google and complete initial cryptographic activation when required.
 
 ### Preconditions
 
 - Nymbus is reachable.
 - The visitor has a Google account.
+- If the account requires initial cryptographic activation, the administrator has initiated the activation process for that user.
 
 ### Main flow
 
@@ -40,18 +41,22 @@ This document describes the principal user/system interactions. It intentionally
 4. Nymbus validates the resulting identity assertion.
 5. Nymbus creates or retrieves the corresponding account.
 6. Nymbus establishes an authenticated session.
-7. Nymbus offers passkey registration.
-8. Visitor completes or skips passkey registration according to the onboarding flow.
+7. If the user's cryptographic key hierarchy has not yet been initialized, Nymbus presents the administrator-initiated activation flow.
+8. User establishes a master password locally.
+9. Nymbus derives/protects the user's cryptographic root locally; the master password is never transmitted to the backend or administrator.
+10. Nymbus offers passkey registration where supported.
+11. Visitor completes or skips passkey registration according to the onboarding flow.
 
 ### Alternative flows
 
 - Google authentication is cancelled → no authenticated Nymbus session is created.
 - Identity validation fails → access is denied.
+- Activation is required but has not been initiated/authorized → private-note cryptographic initialization remains unavailable according to the account state.
 - Passkey registration is unsupported → Google authentication remains available.
 
 ### Security note
 
-This flow authenticates the account. It does not unlock private-note plaintext.
+This flow authenticates the account. Establishing the master password initializes the user's private-note key hierarchy but does not unlock any particular private-note plaintext.
 
 ---
 
@@ -122,41 +127,53 @@ The note exists as a normal note and is available according to the user's author
 **Primary actor:** User  
 **Goal:** Create a note whose body is E2E protected.
 
+### Preconditions
+
+- User has an initialized master-password key hierarchy.
+
 ### Main flow
 
 1. User creates a note.
 2. User enables private-note protection.
-3. Nymbus initializes the private-note security state according to the cryptographic specification.
-4. User completes the required first password operation.
-5. User chooses the applicable long-term protection model.
+3. Nymbus uses the user's existing master-password key hierarchy to initialize the private note.
+4. Nymbus generates the note key locally.
+5. Nymbus creates the owner's protected note-key access record locally.
 6. Nymbus encrypts protected content client-side.
-7. Encrypted content is synchronized/stored by the backend.
+7. Encrypted content and protected key-access metadata are synchronized/stored by the backend.
 8. Permitted metadata remains available for organization/search.
 
 ### Expected result
 
 The backend can manage the encrypted note without requiring access to plaintext.
 
+### Security constraint
+
+There is no dedicated password for the note and no temporary password. The note is protected exclusively through the owner's master-password key hierarchy.
+
 ---
 
-## UC-PRIVATE-01 — First unlock of a private note
+## UC-PRIVATE-01 — First password-based unlock of a private note
 
 **Primary actor:** User  
-**Goal:** Access protected content for the first time.
+**Goal:** Access protected content for the first time on a local client.
 
 ### Main flow
 
 1. User selects a locked private note.
 2. Nymbus displays the protected-note unlock flow.
-3. User enters the required note protection password.
-4. Nymbus verifies/unlocks the required local key material.
+3. User authenticates/unlocks the local key hierarchy using the master password when the required local key material is not already available.
+4. Nymbus unwraps the note key through the user's master-key path.
 5. Protected content becomes available to the authorized client.
-6. User chooses whether subsequent protection uses their master password or a dedicated note password.
-7. Nymbus records the local protection choice securely.
+6. Nymbus marks the note as initialized for convenient local unlock where applicable.
+7. The unlock timer starts according to the 15-minute policy.
 
 ### Prohibited shortcut
 
-The first unlock cannot be replaced by bulk unlock, passkey login, biometric convenience, or an already authenticated account session.
+The first password-based initialization cannot be replaced by passkey login, biometric convenience, bulk unlock, or an already authenticated account session.
+
+### Security constraint
+
+V1 has no note-specific protection password. The user's master password is the sole password-based secret for private notes.
 
 ---
 
@@ -165,12 +182,17 @@ The first unlock cannot be replaced by bulk unlock, passkey login, biometric con
 **Primary actor:** User  
 **Goal:** Unlock a previously initialized private note quickly.
 
+### Preconditions
+
+- The note has completed the required master-password initialization on the device.
+- The platform authenticator has been enrolled for the approved local key-access mechanism.
+
 ### Main flow
 
 1. User opens a previously initialized locked note.
 2. Nymbus requests the supported platform authenticator.
 3. User verifies with the device mechanism.
-4. Nymbus unlocks the permitted local key material.
+4. Nymbus unlocks the permitted local key material through the authenticator-bound local capability.
 5. Note plaintext becomes available locally.
 6. The unlock timer starts/resets according to the defined 15-minute policy.
 
@@ -184,15 +206,15 @@ The first unlock cannot be replaced by bulk unlock, passkey login, biometric con
 ### Main flow
 
 1. User chooses “Unlock all eligible private notes”.
-2. Nymbus identifies private notes that have completed first-time initialization.
-3. Nymbus excludes notes that still require their mandatory first unlock.
-4. Nymbus performs the required local unlock flow.
+2. Nymbus identifies private notes that have completed master-password initialization.
+3. Nymbus excludes notes that are not initialized or for which the user lacks current cryptographic access.
+4. Nymbus performs the approved local unlock flow using the user's master-password key hierarchy or enrolled platform authenticator.
 5. Eligible private-note content becomes locally available for the defined unlock lifetime.
 6. User can perform content search across the unlocked local corpus.
 
 ### Security constraint
 
-Bulk unlock cannot initialize a note that has never completed its first password-based protection setup.
+Bulk unlock cannot initialize a private note whose owner/recipient key-access record has never been established through the required master-password path.
 
 ---
 
@@ -212,27 +234,25 @@ Bulk unlock cannot initialize a note that has never completed its first password
 
 ---
 
-## UC-PRIVATE-05 — Recover private-note access
+## UC-PRIVATE-05 — Initial cryptographic activation
 
-**Primary actor:** User  
-**Goal:** Recover access after losing the applicable local protection capability.
+**Primary actor:** User / Administrator  
+**Goal:** Establish the user's master-password protection path.
 
 ### Main flow
 
-1. User starts recovery.
-2. Nymbus identifies the Google account email associated with the account.
-3. Nymbus initiates the recovery email flow.
-4. A temporary recovery key is delivered through the configured Google account email.
-5. User provides the recovery key.
-6. Nymbus validates that it is unused and within the 10-minute validity window.
-7. User completes the additional recovery security step.
-8. Nymbus restores the authorized key-access state without gaining private-note plaintext access.
+1. Administrator initiates activation for the target Nymbus user.
+2. Nymbus creates an activation transaction.
+3. User authenticates through the approved account flow.
+4. User establishes a master password locally.
+5. Nymbus derives/protects the user's cryptographic root locally.
+6. Nymbus consumes the activation transaction.
 
-### Failure conditions
+### Security constraints
 
-- Key expired → recovery fails and a new recovery attempt is required.
-- Key already used → recovery fails.
-- Invalid key → recovery fails.
+- Administrator must never receive the master password.
+- Nymbus backend must never receive the master password.
+- The activation mechanism must not create a permanent server-side decryption secret.
 
 ---
 
@@ -247,12 +267,13 @@ Bulk unlock cannot initialize a note that has never completed its first password
 2. Owner selects an individual Nymbus user.
 3. Owner assigns read or edit permission.
 4. Nymbus records the authorization.
-5. Recipient is notified according to notification settings.
-6. Recipient can discover the resource according to permission rules.
+5. For a private note, the owner/client creates a protected key-access record for the recipient using the recipient's cryptographic key-encryption capability; the plaintext note key is not exposed to the backend.
+6. Recipient is notified according to notification settings.
+7. Recipient can discover the resource according to permission rules.
 
 ### Private-note condition
 
-For a private note, sharing must transfer/enable cryptographic access without exposing plaintext to the backend.
+The recipient must use their own master password/key hierarchy to access the shared note. The owner's master password is never shared.
 
 ---
 
@@ -266,14 +287,15 @@ For a private note, sharing must transfer/enable cryptographic access without ex
 1. Authorized actor opens sharing management.
 2. Actor selects the user.
 3. Actor revokes access.
-4. Nymbus immediately prevents future authorized API/synchronization access.
+4. Nymbus immediately prevents future authorized API/synchronization access for the revoked identity.
 5. For private content, the cryptographic revocation process is initiated.
-6. Remaining authorized users receive any required key update.
-7. Revoked user loses legitimate access to future synchronized versions.
+6. If required by the security policy, a new note-key generation is created.
+7. The new note key is protected/distributed only to remaining authorized users.
+8. Revoked user loses legitimate access to future synchronized versions.
 
 ### Boundary
 
-Nymbus cannot guarantee destruction of plaintext already copied outside the application.
+Nymbus cannot guarantee destruction of plaintext already copied outside the application or ciphertext/key material already held locally by the revoked user.
 
 ---
 
